@@ -1,6 +1,7 @@
 # card-generator
 
-Fast CLI generator of Luhn-valid synthetic payment-card records.
+Fast CLI generator of Luhn-valid synthetic payment-card records, written in
+C++17. Single executable, no runtime dependencies.
 
 Each record is one line: `<card-number> <MM/YY> <CVV>`.
 
@@ -9,15 +10,21 @@ Each record is one line: `<card-number> <MM/YY> <CVV>`.
 > testing payment-handling software (form validation, parsers, masking,
 > tokenisation pipelines, etc.) only. Do not attempt to use them for payments.
 
-## Install
-
-No dependencies. Requires Node.js >= 16.
+## Build
 
 ```sh
-node bin/generator.js 100
-# or, after `npm link`:
-generator 100
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
 ```
+
+Optionally tune for the host CPU (less portable binary):
+
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DGENERATOR_NATIVE=ON
+cmake --build build -j
+```
+
+The resulting binary is `build/generator`.
 
 ## Usage
 
@@ -35,27 +42,31 @@ Options:
 Examples:
 
 ```sh
-generator 100
-generator 1000 --brand mc
-generator 50000 --brand amex --no-format > cards.txt
-generator 10 --sep , --no-format          # CSV-friendly
+./build/generator 100
+./build/generator 1000 --brand mc
+./build/generator 50000 --brand amex --no-format > cards.txt
+./build/generator 10 --sep , --no-format          # CSV-friendly
 ```
 
 ## Speed
 
-The hot loop writes ASCII bytes directly into a pre-allocated `Buffer` (~64 KiB
-batches) and flushes once per batch. No string concatenation, no regex, no
-per-card allocations. Indicative throughput on a modern laptop core is **~3-5
-million cards/sec** (sunk to /dev/null).
+The hot loop writes ASCII bytes directly into a 64 KiB pre-allocated buffer
+and flushes once per batch through a 1 MiB `setvbuf`-backed stdout buffer.
+No allocations per card, no `std::string`, no streams. Randomness comes from
+xoshiro256\*\* seeded from `std::random_device`; bounded ranges use Lemire's
+multiplication trick (no `%`).
 
-Benchmark:
-
-```sh
-node bench/bench.js 1000000 > /dev/null
-```
+Expected throughput on a single modern core: **~10–30 million cards/sec** sunk
+to `/dev/null` (varies by CPU and brand).
 
 ## Tests
 
 ```sh
-node test/test.js
+cmake --build build --target test_cards
+./build/test_cards
+# or, via CTest:
+ctest --test-dir build --output-on-failure
 ```
+
+The test binary verifies Luhn validity, brand prefixes, field widths, and
+checks throughput (≥ 1M cards/s on the build host).
