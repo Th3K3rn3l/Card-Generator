@@ -135,6 +135,52 @@ int main() {
         }
     });
 
+    test("custom BIN: every card starts with that BIN, still Luhn-valid", []{
+        Options opt; opt.brand = find_brand("visa"); opt.custom_prefix = "414720";
+        Collector c;
+        generate(300, opt, std::ref(c));
+        for (const auto& ln : split_lines(c.buf)) {
+            auto parts = split_spaces(ln);
+            std::string num;
+            for (size_t k = 0; k + 2 < parts.size(); k++) num += parts[k];
+            REQUIRE(num.size() == 16, "visa length");
+            REQUIRE(num.compare(0, 6, "414720") == 0, std::string("BIN prefix mismatch: ") + num);
+            REQUIRE(luhn_check(num), std::string("luhn fail: ") + num);
+        }
+    });
+
+    test("custom BIN works with amex length/cvv", []{
+        Options opt; opt.brand = find_brand("amex"); opt.custom_prefix = "377777";
+        Collector c;
+        generate(200, opt, std::ref(c));
+        for (const auto& ln : split_lines(c.buf)) {
+            auto parts = split_spaces(ln);
+            const std::string& cvv = parts.back();
+            std::string num;
+            for (size_t k = 0; k + 2 < parts.size(); k++) num += parts[k];
+            REQUIRE(num.size() == 15, "amex+BIN length");
+            REQUIRE(num.compare(0, 6, "377777") == 0, "amex BIN prefix");
+            REQUIRE(cvv.size() == 4, "amex+BIN cvv");
+            REQUIRE(luhn_check(num), "amex+BIN luhn");
+        }
+    });
+
+    test("detect_brand_from_bin picks the longest matching prefix", []{
+        REQUIRE(detect_brand_from_bin("411111")->name == "visa", "visa BIN");
+        REQUIRE(detect_brand_from_bin("552233")->name == "mc",   "mc BIN");
+        REQUIRE(detect_brand_from_bin("371449")->name == "amex", "amex BIN");
+        REQUIRE(detect_brand_from_bin("601138")->name == "discover", "discover BIN");
+        REQUIRE(detect_brand_from_bin("352800")->name == "jcb",  "jcb BIN");
+        REQUIRE(detect_brand_from_bin("000000") == nullptr,      "unknown BIN");
+    });
+
+    test("all_digits validation", []{
+        REQUIRE(all_digits("414720"), "digits");
+        REQUIRE(!all_digits(""),      "empty");
+        REQUIRE(!all_digits("12a4"),  "letter");
+        REQUIRE(!all_digits("12 4"),  "space");
+    });
+
     test("throughput sanity: >= 1M cards/sec", []{
         Options opt; opt.brand = find_brand("visa");
         auto t0 = std::chrono::high_resolution_clock::now();

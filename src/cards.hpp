@@ -37,6 +37,31 @@ inline const Brand* find_brand(std::string_view name) {
     return nullptr;
 }
 
+// Returns true if `s` is non-empty and consists only of ASCII digits.
+inline bool all_digits(std::string_view s) {
+    if (s.empty()) return false;
+    for (char c : s) if (c < '0' || c > '9') return false;
+    return true;
+}
+
+// Pick a brand whose IIN prefix matches the given BIN. Returns nullptr if
+// none of the known brand prefixes is a prefix of `bin`.
+inline const Brand* detect_brand_from_bin(std::string_view bin) {
+    const Brand* best = nullptr;
+    size_t best_len = 0;
+    for (const auto& b : brands()) {
+        for (auto p : b.prefixes) {
+            if (p.size() <= bin.size() &&
+                bin.compare(0, p.size(), p) == 0 &&
+                p.size() > best_len) {
+                best = &b;
+                best_len = p.size();
+            }
+        }
+    }
+    return best;
+}
+
 // xoshiro256** — small, fast, high quality.
 struct Xoshiro {
     uint64_t s[4];
@@ -97,12 +122,15 @@ struct Options {
     bool format = true;        // group digits by 4 with spaces
     std::string separator = " ";
     int year_span = 6;
+    // If non-empty, all generated cards start with these digits instead of
+    // the brand's default IIN prefixes. The brand still controls total card
+    // length and CVV length.
+    std::string custom_prefix;
 };
 
 // Writes one card record into `w`, returns the new write pointer.
 inline char* write_card(char* w, Xoshiro& rng, const Options& opt,
-                        const std::vector<std::array<uint8_t, 4>>& pref_d,
-                        const std::vector<int>& pref_len,
+                        const std::vector<std::vector<uint8_t>>& pref_d,
                         int year_base) {
     const int total = opt.brand->length;
     const int cvv = opt.brand->cvv;
@@ -112,7 +140,7 @@ inline char* write_card(char* w, Xoshiro& rng, const Options& opt,
 
     const uint32_t pi = bounded(rng, static_cast<uint32_t>(pref_d.size()));
     const auto& pa = pref_d[pi];
-    const int plen = pref_len[pi];
+    const int plen = static_cast<int>(pa.size());
 
     int sum = 0;
     for (int j = 0; j < total - 1; j++) {
@@ -165,15 +193,20 @@ inline int line_length(const Options& opt) {
 // Generates `count` records, writing into `sink(ptr, len)`.
 template <class Sink>
 void generate(long long count, const Options& opt, Sink&& sink) {
-    std::vector<std::array<uint8_t, 4>> pref_d;
-    std::vector<int> pref_len;
-    pref_d.reserve(opt.brand->prefixes.size());
-    pref_len.reserve(opt.brand->prefixes.size());
-    for (auto p : opt.brand->prefixes) {
-        std::array<uint8_t, 4> a{};
-        for (size_t i = 0; i < p.size() && i < 4; i++) a[i] = static_cast<uint8_t>(p[i] - '0');
-        pref_d.push_back(a);
-        pref_len.push_back(static_cast<int>(p.size()));
+    std::vector<std::vector<uint8_t>> pref_d;
+    if (!opt.custom_prefix.empty()) {
+        std::vector<uint8_t> v;
+        v.reserve(opt.custom_prefix.size());
+        for (char c : opt.custom_prefix) v.push_back(static_cast<uint8_t>(c - '0'));
+        pref_d.push_back(std::move(v));
+    } else {
+        pref_d.reserve(opt.brand->prefixes.size());
+        for (auto p : opt.brand->prefixes) {
+            std::vector<uint8_t> v;
+            v.reserve(p.size());
+            for (char c : p) v.push_back(static_cast<uint8_t>(c - '0'));
+            pref_d.push_back(std::move(v));
+        }
     }
 
     const std::time_t now = std::time(nullptr);
@@ -195,7 +228,7 @@ void generate(long long count, const Options& opt, Sink&& sink) {
         const int n = static_cast<int>(remaining < per_batch ? remaining : per_batch);
         char* w = buf.data();
         for (int i = 0; i < n; i++) {
-            w = write_card(w, rng, opt, pref_d, pref_len, year_base);
+            w = write_card(w, rng, opt, pref_d, year_base);
         }
         sink(buf.data(), static_cast<size_t>(w - buf.data()));
         remaining -= n;
