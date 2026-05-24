@@ -1,0 +1,17 @@
+{
+  "name": "card-generator",
+  "version": "1.0.0",
+  "description": "Fast CLI generator of Luhn-valid synthetic card numbers (for payment-software testing only).",
+  "bin": {
+    "generator": "bin/generator.js"
+  },
+  "main": "src/generator.js",
+  "scripts": {
+    "start": "node bin/generator.js",
+    "bench": "node bench/bench.js"
+  },
+  "engines": {
+    "node": ">=16"
+  },
+  "license": "MIT"
+}
