@@ -1,72 +1,221 @@
-# card-generator
+# 💳 card-generator
 
-Fast CLI generator of Luhn-valid synthetic payment-card records, written in
-C++17. Single executable, no runtime dependencies.
+⚡ Очень быстрый CLI-генератор синтетических номеров банковских карт,
+проходящих проверку по **алгоритму Луна**. Написан на C++17, собирается через
+CMake, никаких зависимостей — на выходе один маленький бинарь.
 
-Each record is one line: `<card-number> <MM/YY> <CVV>`.
+Каждая строка вывода — одна готовая «карта»:
 
-> **Disclaimer.** Generated numbers pass the Luhn checksum and use real brand
-> IIN prefixes, but they are **not issued to anyone**. They are intended for
-> testing payment-handling software (form validation, parsers, masking,
-> tokenisation pipelines, etc.) only. Do not attempt to use them for payments.
+```
+4929 9231 4271 9262 07/27 310
+```
 
-## Build
+То есть: **номер карты · срок действия (MM/YY) · CVV**.
+
+---
+
+## ⚠️ Важно прочитать
+
+Эти номера **не привязаны ни к кому**. Они:
+
+- ✅ проходят математическую проверку Луна;
+- ✅ начинаются с настоящих BIN-префиксов брендов (Visa/MC/Amex/…);
+- ❌ **не выпущены ни одним банком** и никакого реального счёта за ними нет.
+
+Это инструмент для тестирования платёжного софта: формы ввода, маски,
+валидаторы, токенизация, парсеры, фаззинг. Использовать их для попыток
+реальных платежей **бесполезно и незаконно**. Не делайте этого. 🙅
+
+---
+
+## 🚀 Быстрый старт за 30 секунд
+
+```sh
+# 1. Сборка
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
+
+# 2. Запуск — 100 карт в консоль
+./build/generator 100
+```
+
+Готово. 🎉 В терминале появятся 100 строк с валидными по Луна картами.
+
+---
+
+## 📦 Что нужно для сборки
+
+| Инструмент   | Минимальная версия |
+|--------------|--------------------|
+| 🛠 CMake     | 3.10               |
+| 🧱 Компилятор C++17 | gcc 7+ / clang 6+ / MSVC 2019+ |
+
+Всё. Никаких внешних библиотек, никаких пакетных менеджеров.
+
+### 🐧 Linux / 🍎 macOS
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
+./build/generator 100
 ```
 
-Optionally tune for the host CPU (less portable binary):
+### 🪟 Windows (Visual Studio)
+
+```powershell
+cmake -S . -B build
+cmake --build build --config Release
+.\build\Release\generator.exe 100
+```
+
+### ⚡ Максимальная скорость (binary не для распространения)
+
+Добавьте `-DGENERATOR_NATIVE=ON` — компилятор подстроится под ваш конкретный
+процессор:
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DGENERATOR_NATIVE=ON
 cmake --build build -j
 ```
 
-The resulting binary is `build/generator`.
+---
 
-## Usage
+## 🎯 Как пользоваться
 
-```
-generator <count> [options]
+Главное правило простое:
 
-Options:
-  -b, --brand <name>   visa | mc | amex | discover | jcb (default: visa)
-      --no-format      Do not insert spaces between groups of 4 digits
-      --sep <s>        Field separator (default: single space)
-      --year-span <n>  Years of validity range above current (default: 6)
-  -h, --help           Show help
-```
+> **`generator <число>` → столько-то валидных карт в консоль.**
 
-Examples:
+Например:
 
 ```sh
 ./build/generator 100
-./build/generator 1000 --brand mc
-./build/generator 50000 --brand amex --no-format > cards.txt
-./build/generator 10 --sep , --no-format          # CSV-friendly
 ```
 
-## Speed
+🟰 «Дай мне 100 валидных по Луна карт прямо в терминал».
 
-The hot loop writes ASCII bytes directly into a 64 KiB pre-allocated buffer
-and flushes once per batch through a 1 MiB `setvbuf`-backed stdout buffer.
-No allocations per card, no `std::string`, no streams. Randomness comes from
-xoshiro256\*\* seeded from `std::random_device`; bounded ranges use Lemire's
-multiplication trick (no `%`).
+### 📋 Примеры
 
-Expected throughput on a single modern core: **~10–30 million cards/sec** sunk
-to `/dev/null` (varies by CPU and brand).
+```sh
+# 10 карт Visa (по умолчанию)
+./build/generator 10
 
-## Tests
+# 500 карт Mastercard
+./build/generator 500 --brand mc
+
+# 1000 карт American Express без пробелов между группами цифр
+./build/generator 1000 --brand amex --no-format
+
+# 50 карт в CSV-формате через запятую
+./build/generator 50 --sep , --no-format
+
+# 1 000 000 карт в файл
+./build/generator 1000000 > cards.txt
+
+# Только номера, без срока и CVV — через cut
+./build/generator 100 --no-format | cut -d' ' -f1
+```
+
+---
+
+## 🎛 Все опции
+
+| Флаг                 | Что делает                                      | По умолчанию |
+|----------------------|--------------------------------------------------|--------------|
+| `<число>`            | Сколько карт сгенерировать. **Первый аргумент.** | —            |
+| `-b`, `--brand <имя>`| Бренд: `visa`, `mc`, `mastercard`, `amex`, `discover`, `jcb` | `visa` |
+| `--no-format`        | Не вставлять пробелы между группами цифр         | пробелы вкл. |
+| `--sep <строка>`     | Разделитель полей (номер · срок · CVV)           | `" "` (пробел) |
+| `--year-span <N>`    | На сколько лет вперёд может «жить» карта         | `6`          |
+| `-h`, `--help`       | Краткая справка                                  | —            |
+
+---
+
+## 💳 Поддерживаемые бренды
+
+| Имя в `--brand` | Длина номера | CVV | Префикс(ы)            |
+|-----------------|--------------|-----|------------------------|
+| `visa`          | 16           | 3   | `4`                    |
+| `mc` / `mastercard` | 16       | 3   | `51`–`55`              |
+| `amex`          | 15           | 4   | `34`, `37`             |
+| `discover`      | 16           | 3   | `6011`, `65`           |
+| `jcb`           | 16           | 3   | `35`                   |
+
+---
+
+## 🧪 Запуск тестов
 
 ```sh
 cmake --build build --target test_cards
 ./build/test_cards
-# or, via CTest:
+# либо через CTest:
 ctest --test-dir build --output-on-failure
 ```
 
-The test binary verifies Luhn validity, brand prefixes, field widths, and
-checks throughput (≥ 1M cards/s on the build host).
+Тесты проверяют:
+
+- 🔢 Луна-валидность каждой сгенерированной карты;
+- ✂️ корректные длины номера и CVV для каждого бренда;
+- 🏷 правильные BIN-префиксы;
+- 📅 формат и диапазон срока действия;
+- ⚡ пропускная способность ≥ 1 000 000 карт/сек на машине сборки.
+
+---
+
+## 🏎 Почему это быстро
+
+- 🌀 Генератор случайных чисел — `xoshiro256**` (быстрее `std::mt19937` в разы).
+- ✖️ Ограниченные диапазоны (0–9, 1–12 и т.п.) — через мультипликативный
+  трюк Лемира, без оператора `%`.
+- 🧱 Никаких `std::string`, никаких потоков, **нулевые** аллокации на одну
+  карту — горячий цикл пишет ASCII-байты прямо в заранее выделенный
+  64 KiB-буфер.
+- 📤 Стандартный вывод обёрнут 1 MiB-буфером через `setvbuf`, поэтому
+  системные вызовы — раз в мегабайт, а не на каждую карту.
+- 🚀 Один маленький нативный бинарь — холодный старт измеряется единицами
+  миллисекунд (а не десятками, как у скриптовых рантаймов).
+
+Ориентир по производительности на одном современном ядре:
+**~10–30 миллионов карт в секунду** при сбросе в `/dev/null`.
+
+---
+
+## 🗂 Структура репозитория
+
+```
+.
+├── CMakeLists.txt     # сборка
+├── README.md          # вот этот файл
+├── .gitignore
+└── src/
+    ├── cards.hpp      # ядро: PRNG, Луна, бренды, генерация
+    ├── main.cpp       # CLI и парсинг аргументов
+    └── test.cpp       # юнит-тесты + замер скорости
+```
+
+---
+
+## ❓ FAQ
+
+**❔ А карты «настоящие»?**
+Нет. Они математически валидны и похожи по форме на настоящие, но за ними
+нет ни счёта, ни эмитента. См. раздел «⚠️ Важно прочитать».
+
+**❔ Можно ли получить точно нужный BIN?**
+Сейчас бренды выбираются из таблицы префиксов. Если нужен конкретный
+6-значный BIN — это правка в одном месте в `src/cards.hpp` (массив
+`brands()`). Хочешь — добавим параметр `--bin`.
+
+**❔ А под Windows точно соберётся?**
+Да, чистый стандартный C++17, без POSIX-зависимостей. Любая VS 2019+,
+MinGW-w64 или clang-cl справятся.
+
+**❔ Почему C++, а не Python/Node?**
+Потому что задача была — **максимально быстро**. Скриптовые рантаймы
+тратят 30–60 мс на холодный старт; нативный бинарь стартует за единицы
+миллисекунд и потом крутит горячий цикл практически на скорости памяти.
+
+---
+
+🧑‍💻 Сделано для тестов платёжных пайплайнов. Если нашли баг или нужна
+новая фича — заводите issue.
