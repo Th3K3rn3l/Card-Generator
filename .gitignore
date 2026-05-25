@@ -4,3 +4,6 @@ build/
 *.exe
 .cache/
 compile_commands.json
+
+# BIN database (downloaded on demand; large file, redistributed under CC-BY-4.0)
+data/bin-list-data.csv

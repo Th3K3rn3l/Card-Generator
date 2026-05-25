@@ -121,6 +121,193 @@ inline bool luhn_check(std::string_view num) {
     return sum % 10 == 0;
 }
 
+// ---------------------------------------------------------------------------
+// Validation
+// ---------------------------------------------------------------------------
+//
+// `validate_card(...)` is the canonical end-to-end check. It reports the
+// first violation it finds via `ValidationError`, plus the brand it managed
+// to detect from the BIN, so callers can show useful diagnostics.
+//
+// The number may contain ASCII spaces, dashes, underscores or tabs as visual
+// separators — those are stripped before checking. Anything else (letters,
+// punctuation, unicode) fails with NonDigit.
+
+enum class ValidationError {
+    Ok = 0,
+    Empty,            // empty card number after normalization
+    NonDigit,         // contains a character that is neither a digit nor a
+                      // permitted separator
+    BadLength,        // length does not match the (expected or detected) brand
+    UnknownBrand,     // BIN does not match any known brand and no expected
+                      // brand was supplied
+    BrandMismatch,    // expected brand was supplied but its prefixes do not
+                      // match the BIN
+    BadLuhn,          // Luhn checksum failure
+    BadMonth,         // expiry month outside 1..12 (or unparseable expiry)
+    BadYear,          // expiry year is outside 0..99
+    Expired,          // expiry already in the past relative to "today"
+    BadCvvLength,     // CVV length does not match brand
+    BadCvvDigits,     // CVV contains a non-digit
+};
+
+inline const char* describe(ValidationError e) {
+    switch (e) {
+        case ValidationError::Ok:            return "ok";
+        case ValidationError::Empty:         return "empty card number";
+        case ValidationError::NonDigit:      return "non-digit character in card number";
+        case ValidationError::BadLength:     return "card length does not match brand";
+        case ValidationError::UnknownBrand:  return "BIN does not match any known brand";
+        case ValidationError::BrandMismatch: return "BIN does not match the expected brand";
+        case ValidationError::BadLuhn:       return "Luhn checksum is invalid";
+        case ValidationError::BadMonth:      return "expiry month must be 1..12";
+        case ValidationError::BadYear:       return "expiry year is invalid";
+        case ValidationError::Expired:       return "card is expired";
+        case ValidationError::BadCvvLength:  return "CVV length does not match brand";
+        case ValidationError::BadCvvDigits:  return "CVV must contain only digits";
+    }
+    return "unknown validation error";
+}
+
+struct ValidationResult {
+    ValidationError err = ValidationError::Ok;
+    const Brand* brand = nullptr;     // best-effort brand detected from BIN
+    std::string normalized;           // number stripped of separators
+    bool ok() const noexcept { return err == ValidationError::Ok; }
+    explicit operator bool() const noexcept { return ok(); }
+    const char* what() const noexcept { return describe(err); }
+};
+
+struct NormalizeResult {
+    std::string digits;
+    bool ok = true;
+};
+
+// Strip the visual separators commonly found in user input (spaces, dashes,
+// underscores, tabs). Any other non-digit character fails the normalization.
+inline NormalizeResult normalize_number(std::string_view s) {
+    NormalizeResult r;
+    r.digits.reserve(s.size());
+    for (char c : s) {
+        if (c >= '0' && c <= '9')                           r.digits.push_back(c);
+        else if (c == ' ' || c == '-' || c == '_' || c == '\t') continue;
+        else { r.ok = false; r.digits.clear(); return r; }
+    }
+    return r;
+}
+
+// True if `b->prefixes` contains any string that is a prefix of `num`.
+inline bool brand_matches_prefix(const Brand* b, std::string_view num) {
+    if (!b) return false;
+    for (auto p : b->prefixes) {
+        if (p.size() <= num.size() && num.compare(0, p.size(), p) == 0) return true;
+    }
+    return false;
+}
+
+struct Date {
+    int year;   // 4-digit
+    int month;  // 1..12
+};
+
+inline Date current_date() {
+    const std::time_t t = std::time(nullptr);
+    const std::tm tm = *std::localtime(&t);
+    return Date{tm.tm_year + 1900, tm.tm_mon + 1};
+}
+
+// Resolve a 2-digit YY into a 4-digit year nearest to `today.year`.
+// We pin to the same century as today, then bump to the next century when
+// the result lands more than 50 years in the past — that handles 2090..2099
+// rolling over to 2100..2109 for callers sending future-dated cards in 2050+.
+inline int resolve_full_year(int yy, int today_year) {
+    const int century = (today_year / 100) * 100;
+    int full = century + yy;
+    if (full < today_year - 50) full += 100;
+    return full;
+}
+
+// Validate just the number part. `expected` is optional: if supplied, the
+// number must match that brand's prefixes and length. Otherwise the brand is
+// detected from the BIN and used for the length check.
+inline ValidationResult validate_number(std::string_view raw,
+                                        const Brand* expected = nullptr) {
+    ValidationResult r;
+    auto nr = normalize_number(raw);
+    if (!nr.ok)               { r.err = ValidationError::NonDigit; return r; }
+    if (nr.digits.empty())    { r.err = ValidationError::Empty;    return r; }
+    r.normalized = std::move(nr.digits);
+
+    // Always attempt detection so callers can show "BIN looks like X" even on
+    // failure paths.
+    r.brand = detect_brand_from_bin(r.normalized);
+
+    const Brand* check = expected ? expected : r.brand;
+    if (!check) { r.err = ValidationError::UnknownBrand; return r; }
+
+    if (expected && !brand_matches_prefix(expected, r.normalized)) {
+        r.err = ValidationError::BrandMismatch;
+        return r;
+    }
+    if (static_cast<int>(r.normalized.size()) != check->length) {
+        r.err = ValidationError::BadLength;
+        return r;
+    }
+    if (!luhn_check(r.normalized)) {
+        r.err = ValidationError::BadLuhn;
+        return r;
+    }
+    return r;
+}
+
+inline ValidationResult validate_card(std::string_view raw_number,
+                                      int month, int yy,
+                                      std::string_view cvv,
+                                      const Brand* expected = nullptr,
+                                      Date today = current_date()) {
+    auto r = validate_number(raw_number, expected);
+    if (!r.ok()) return r;
+
+    if (month < 1 || month > 12) { r.err = ValidationError::BadMonth; return r; }
+    if (yy < 0 || yy > 99)       { r.err = ValidationError::BadYear;  return r; }
+
+    const int full_year = resolve_full_year(yy, today.year);
+    if (full_year < today.year ||
+        (full_year == today.year && month < today.month)) {
+        r.err = ValidationError::Expired;
+        return r;
+    }
+
+    const Brand* brand_for_cvv = expected ? expected : r.brand;
+    const int expected_cvv_len = brand_for_cvv ? brand_for_cvv->cvv : 3;
+    if (static_cast<int>(cvv.size()) != expected_cvv_len) {
+        r.err = ValidationError::BadCvvLength;
+        return r;
+    }
+    for (char c : cvv) {
+        if (c < '0' || c > '9') { r.err = ValidationError::BadCvvDigits; return r; }
+    }
+    return r;
+}
+
+// Convenience: take the expiry as a `MM/YY` literal.
+inline ValidationResult validate_card_str(std::string_view raw_number,
+                                          std::string_view raw_expiry,
+                                          std::string_view cvv,
+                                          const Brand* expected = nullptr,
+                                          Date today = current_date()) {
+    ValidationResult r;
+    if (raw_expiry.size() != 5 || raw_expiry[2] != '/' ||
+        !all_digits(raw_expiry.substr(0, 2)) ||
+        !all_digits(raw_expiry.substr(3, 2))) {
+        r.err = ValidationError::BadMonth;
+        return r;
+    }
+    const int m = (raw_expiry[0] - '0') * 10 + (raw_expiry[1] - '0');
+    const int y = (raw_expiry[3] - '0') * 10 + (raw_expiry[4] - '0');
+    return validate_card(raw_number, m, y, cvv, expected, today);
+}
+
 enum class OutputFormat { Plain, Json, Csv };
 
 struct Options {
